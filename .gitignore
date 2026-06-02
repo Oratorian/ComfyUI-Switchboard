@@ -1,2 +1,4 @@
 __pycache__
 .comfyignore
+node.zip
+.ruff_cache
