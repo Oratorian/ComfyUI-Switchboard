@@ -1,0 +1,13 @@
+[project]
+name = "comfyui-switchboard"
+description = "Switchboard - toggle ComfyUI groups or individual nodes on/off (bypass or mute), manually or from a wired boolean. A more flexible take on rgthree's Fast Group Bypasser."
+version = "1.0.0"
+license = { text = "MIT" }
+
+[project.urls]
+Repository = "https://github.com/oratorian/comfyui-switchboard"
+
+[tool.comfy]
+PublisherId = "Oratorian"
+DisplayName = "Switchboard"
+Icon = ""
