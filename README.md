@@ -1,21 +1,30 @@
 # 🎛️ Switchboard - Advanced Group/Node Controllers for ComfyUI
 
-Client-side nodes for enabling/disabling parts of your graph - by hand or from a
-wired boolean. A more flexible take on rgthree's *Fast Group Bypasser*. Two
-nodes, identical behaviour, different target:
+Nodes for enabling/disabling parts of your graph - by hand or from a wired
+boolean. A more flexible take on rgthree's *Fast Group Bypasser*, plus a couple
+of boolean utilities so you can build conditional pipelines without any other
+pack.
 
-| Node | Targets | Add list shows |
-|------|---------|----------------|
-| **Group Controller** | groups, by **title** | the group titles in your graph |
-| **Node Controller** | individual nodes, by **id** | nodes as `id: Title` |
+| Node | Targets / does | Add list shows |
+|------|----------------|----------------|
+| **Group Controller** | toggles groups, by **title** | the group titles in your graph |
+| **Node Controller** | toggles individual nodes, by **id** | nodes as `id: Title` |
+| **Value on Boolean** | boolean -> one of two values (float/int/string) | - |
+| **Boolean Switch** | routes one of two **any-type** inputs, lazily | - |
+
+The two Controllers are client-side (they toggle node modes in the browser); the
+two utilities are real backend nodes (they move data at runtime). See
+[Bundled boolean utilities](#bundled-boolean-utilities).
 
 ## Install
 
 Copy this folder into `ComfyUI/custom_nodes/` (final path
-`ComfyUI/custom_nodes/comfyui-switchboard/`) and restart ComfyUI, then hard-reload
-the browser (Ctrl/Cmd+Shift+R). There are no Python dependencies - these are pure
-front-end JavaScript nodes that never run on the server. In the Add-Node menu the
-nodes live under the **🎛️ Switchboard** category.
+`ComfyUI/custom_nodes/comfyui-switchboard/`), then **restart ComfyUI** and
+hard-reload the browser (Ctrl/Cmd+Shift+R). There are **no external Python
+dependencies**. The two Controllers are front-end only; the two boolean utilities
+are lightweight Python nodes (which is why a server restart is needed, not just a
+browser reload). Everything lives under the **🎛️ Switchboard** category in the
+Add-Node menu.
 
 ---
 
@@ -37,9 +46,21 @@ Decode`** is still **enabled** - because a **Boolean** (`true`) is wired to it.
 **A connected boolean overrides the `ALL` broadcast.** This is the key behaviour,
 described in full below.
 
+## Putting it together - complex conditional control
+
+![The bundled Value on Boolean and Boolean Switch feeding a Group Controller to gate a pipeline that includes a subgraph](assets/complex-control.png)
+
+Because each controller target is a toggle any `BOOLEAN` can drive, you can route
+booleans through the bundled **Value on Boolean** and **Boolean Switch** nodes
+into one or more controllers to flip whole sections of a graph from a few inputs.
+Above, a **Group Controller** gates several groups while data is routed by a
+**Boolean Switch** - including targets **inside a subgraph** - turning a handful
+of inputs into a full conditional pipeline. **Every node shown ships in this
+pack; no external custom nodes are needed.**
+
 ---
 
-## Anatomy of the node
+## Anatomy of a Controller
 
 From top to bottom, a controller shows:
 
@@ -116,6 +137,44 @@ the source node's widget.
 
 ---
 
+## Bundled boolean utilities
+
+So you don't need a separate pack (e.g. Comfyroll) to build conditional
+pipelines, two small **backend** nodes ship alongside the controllers:
+
+### Value on Boolean
+Outputs one of two values depending on a boolean. `boolean = True` returns
+`value_if_true`, otherwise `value_if_false` (both set as `FLOAT` widgets on the
+node). The same chosen value is emitted on **four outputs** so it can drive
+almost any input without a separate convert node:
+
+| Output | Type | What it is | Typical things it controls |
+|--------|------|------------|----------------------------|
+| `float` | `FLOAT` | the chosen value as-is | CFG, denoise/strength, guidance, LoRA/ControlNet weight, IPAdapter weight - any `FLOAT` input |
+| `int` | `INT` | the value rounded to a whole number | steps, seed, width/height, batch size, a switch's select index, loop counts - any `INT` input |
+| `string` | `STRING` | the value as text (e.g. `"2.0"`) | filename prefixes, labels, text concat, anything taking a `STRING` |
+| `boolean` | `BOOLEAN` | the input boolean, passed through | chain into another node's boolean, a **Boolean Switch**, or a Controller's `BOOLEAN` input - lets one toggle fan out to many places |
+
+So a single toggle can, for example, output `7.0`/`3.5` to set CFG **and**
+simultaneously pass its boolean on to flip a Controller - one decision, many
+effects. Just connect the output whose type matches the target socket (ComfyUI
+shows compatible sockets when you drag a wire).
+
+### Boolean Switch
+Routes one of two inputs through based on a boolean: `on_true` when `True`,
+`on_false` when `False`. Its `boolean` is an **input socket** (wire a `BOOLEAN`
+in - there's no toggle widget, since a switch driven by a hidden widget is easy
+to misread). Both data inputs are **any type** (`*`), so it switches images,
+latents, models, conditioning - anything. It is **lazy**: only the selected
+branch is evaluated, so the unused input's entire upstream chain is **skipped**
+(cheaper than switches that compute both sides).
+
+> These are real executing nodes (Python), unlike the controllers. Adding/updating
+> them requires a **ComfyUI server restart**, not just a browser reload. They live
+> under the same **🎛️ Switchboard** category.
+
+---
+
 ## Notes
 
 - **Node Controller targets by id.** Nodes are matched by their stable id, so
@@ -130,10 +189,13 @@ the source node's widget.
 
 ## Nodes 2.0 compatibility
 
-These are client-side (virtual) nodes built on the legacy LiteGraph API - the
-same class of node as rgthree's group tools. ComfyUI's **Nodes 2.0** (Vue
-renderer) is currently opt-in and keeps a compatibility layer, so these load and
-function there (toggles, booleans and queue-time apply all work). Caveats:
+The two **Controllers** are client-side (virtual) nodes built on the legacy
+LiteGraph API - the same class of node as rgthree's group tools. (The **Value on
+Boolean** and **Boolean Switch** utilities are ordinary backend nodes and aren't
+affected by any of this.) ComfyUI's **Nodes 2.0** (Vue renderer) is currently
+opt-in and keeps a compatibility layer, so the Controllers load and function
+there (toggles, booleans and queue-time apply all work). Caveats for the
+Controllers:
 
 - The **core action** (setting nodes to active/bypass/mute) is graph data, not
   rendering - it works regardless of renderer.
