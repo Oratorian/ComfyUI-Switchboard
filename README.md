@@ -124,6 +124,9 @@ the source node's widget.
 - **Survives save/load.** All state lives in node properties and is re-applied at
   queue time. Older saved Group Controllers are auto-migrated to the current
   format.
+- **Subgraph-aware.** A controller operates on the graph it sits in, so a
+  controller placed inside a subgraph targets that subgraph's own groups/nodes
+  (and its `Add…` list shows those, not the outer graph's).
 
 ## Nodes 2.0 compatibility
 

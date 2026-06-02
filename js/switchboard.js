@@ -37,17 +37,21 @@ function controlToMode(control) {
 
 // ---- group targets ---------------------------------------------------------
 
-function getGraphGroups() {
-  const graph = app.graph;
+// NOTE: every helper takes the *node's own graph* (`this.graph`), not the root
+// `app.graph`. A controller placed inside a subgraph must see that subgraph's
+// groups/nodes/links -- using the root graph is what made subgraphs only list
+// the outer graph's contents.
+
+function getGraphGroups(graph) {
   if (!graph) return [];
   return graph._groups || graph.groups || [];
 }
 
-/** All group titles currently in the graph, de-duplicated, as {key,label}. */
-function getGroupChoices() {
+/** All group titles in `graph`, de-duplicated, as {key,label}. */
+function getGroupChoices(graph) {
   const seen = new Set();
   const choices = [];
-  for (const group of getGraphGroups()) {
+  for (const group of getGraphGroups(graph)) {
     if (group.title && !seen.has(group.title)) {
       seen.add(group.title);
       choices.push({ key: group.title, label: group.title });
@@ -56,9 +60,9 @@ function getGroupChoices() {
   return choices;
 }
 
-/** Set the mode of every node inside groups whose title matches `key`. */
-function applyModeToGroup(key, mode) {
-  for (const group of getGraphGroups()) {
+/** Set the mode of every node inside `graph` groups whose title matches `key`. */
+function applyModeToGroup(graph, key, mode) {
+  for (const group of getGraphGroups(graph)) {
     if (group.title !== key) continue;
     // Make sure the group knows which nodes are inside its bounds.
     if (typeof group.recomputeInsideNodes === "function") {
@@ -71,17 +75,16 @@ function applyModeToGroup(key, mode) {
 
 // ---- node targets ----------------------------------------------------------
 
-function getGraphNodes() {
-  const graph = app.graph;
+function getGraphNodes(graph) {
   if (!graph) return [];
   return graph._nodes || graph.nodes || [];
 }
 
-/** Every targetable node as {key:id, label:"id: Title"}, excluding `self` and
- *  any of our own controller nodes (you can't control a controller). */
-function getNodeChoices(self) {
+/** Every targetable node in `graph` as {key:id, label:"id: Title"}, excluding
+ *  `self` and any of our own controller nodes (you can't control a controller). */
+function getNodeChoices(graph, self) {
   const choices = [];
-  for (const node of getGraphNodes()) {
+  for (const node of getGraphNodes(graph)) {
     if (node === self) continue;
     if (node.constructor && node.constructor.isSwitchboardController) continue;
     const name = node.title || node.type || "node";
@@ -90,10 +93,9 @@ function getNodeChoices(self) {
   return choices;
 }
 
-/** Set the mode of the node whose id matches `key`. Handles both numeric ids
- *  (classic graphs) and string ids (e.g. subgraph nodes under Nodes 2.0). */
-function applyModeToNode(key, mode) {
-  const graph = app.graph;
+/** Set the mode of the `graph` node whose id matches `key`. Handles both numeric
+ *  ids (classic graphs) and string ids (e.g. subgraph nodes under Nodes 2.0). */
+function applyModeToNode(graph, key, mode) {
   if (!graph || !graph.getNodeById) return;
   let node = graph.getNodeById(key);
   if (!node && /^\d+$/.test(key)) node = graph.getNodeById(Number(key));
@@ -131,6 +133,12 @@ class BaseControllerNode extends LGraphNode {
 
   get _removePlaceholder() {
     return `➖ Remove ${this.constructor.targetWord}…`;
+  }
+
+  /** The graph this controller lives in -- the subgraph when nested, otherwise
+   *  the root graph. Everything operates on this, never the root `app.graph`. */
+  _graph() {
+    return this.graph || app.graph;
   }
 
   // ---- overridable target hooks (defaults are inert) -----------------------
@@ -299,9 +307,10 @@ class BaseControllerNode extends LGraphNode {
   _readBooleanInput(slot) {
     const input = this.inputs?.[slot];
     if (!input || input.link == null) return null;
-    const link = app.graph.links[input.link];
+    const graph = this._graph();
+    const link = graph.links[input.link];
     if (!link) return null;
-    const origin = app.graph.getNodeById(link.origin_id);
+    const origin = graph.getNodeById(link.origin_id);
     if (!origin) return null;
     // Primitive/Boolean nodes hold their value in a widget (a constant set in
     // the UI), which we can read directly on the front-end.
@@ -457,11 +466,11 @@ class GroupControllerNode extends BaseControllerNode {
   }
 
   _allChoices() {
-    return getGroupChoices();
+    return getGroupChoices(this._graph());
   }
 
   _applyTo(key, mode) {
-    applyModeToGroup(key, mode);
+    applyModeToGroup(this._graph(), key, mode);
   }
 }
 GroupControllerNode.nodeTitle = "Group Controller";
@@ -475,11 +484,11 @@ class NodeControllerNode extends BaseControllerNode {
   }
 
   _allChoices() {
-    return getNodeChoices(this);
+    return getNodeChoices(this._graph(), this);
   }
 
   _applyTo(key, mode) {
-    applyModeToNode(key, mode);
+    applyModeToNode(this._graph(), key, mode);
   }
 }
 NodeControllerNode.nodeTitle = "Node Controller";
