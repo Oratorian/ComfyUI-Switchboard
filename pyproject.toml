@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-switchboard"
 description = "ComfyUI Switchboard - toggle ComfyUI groups or individual nodes on/off (bypass or mute), manually or from a wired boolean. A more flexible take on rgthree's Fast Group Bypasser."
-version = "1.1.1"
+version = "1.1.2"
 license = { file = "LICENSE" }
 readme = "README.md"
 
