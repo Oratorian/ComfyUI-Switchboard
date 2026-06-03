@@ -185,7 +185,13 @@ branch is evaluated, so the unused input's entire upstream chain is **skipped**
   format.
 - **Subgraph-aware.** A controller operates on the graph it sits in, so a
   controller placed inside a subgraph targets that subgraph's own groups/nodes
-  (and its `Add…` list shows those, not the outer graph's).
+  (and its `Add…` list shows those, not the outer graph's). To drive an
+  in-subgraph controller from outside, expose a `BOOLEAN` as a **subgraph input**
+  and wire your boolean to it - the controller traces that input back across the
+  subgraph boundary to read the value (so only the boolean crosses; the
+  controller keeps holding the inner node/group id). Nested subgraphs work too.
+  To switch a **whole** subgraph instead, target the subgraph node itself with a
+  Node Controller from the parent graph.
 
 ## Nodes 2.0 compatibility
 

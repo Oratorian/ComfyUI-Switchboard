@@ -102,6 +102,31 @@ function applyModeToNode(graph, key, mode) {
   if (node) node.mode = mode;
 }
 
+/** Look up a link by id, tolerating both the classic object/array `links` and
+ *  the newer `Map` used by the Comfy-Org litegraph (incl. Subgraph). */
+function linkById(graph, id) {
+  const links = graph && graph.links;
+  if (!links || id == null) return null;
+  if (typeof links.get === "function") return links.get(id) || null; // Map
+  return links[id] || null; // object / array
+}
+
+/** Resolve a node by id, including subgraph I/O proxy nodes that aren't always
+ *  registered in getNodeById. */
+function nodeById(graph, id) {
+  if (!graph) return null;
+  let n = graph.getNodeById ? graph.getNodeById(id) : null;
+  if (!n && /^\d+$/.test(String(id)) && graph.getNodeById) n = graph.getNodeById(Number(id));
+  if (n) return n;
+  const io = [];
+  if (graph.inputNode) io.push(graph.inputNode);
+  if (graph.outputNode) io.push(graph.outputNode);
+  if (Array.isArray(graph._input_nodes)) io.push(...graph._input_nodes);
+  if (Array.isArray(graph._output_nodes)) io.push(...graph._output_nodes);
+  for (const c of io) if (c && (c.id === id || c.id === Number(id))) return c;
+  return null;
+}
+
 /**
  * Shared base. Subclasses provide three things via static/overridable members:
  *   - static targetWord          ("group" | "node") for placeholder text
@@ -302,26 +327,82 @@ class BaseControllerNode extends LGraphNode {
     }
   }
 
-  /** Read the boolean coming into `slot` from the connected upstream node.
-   *  Returns true/false, or null if nothing usable is connected. */
+  /** Read the boolean coming into `slot`. Follows the wire to its source, and
+   *  if the source is a subgraph input proxy, hops out across the boundary to
+   *  read the real constant in the parent graph (recursively). Returns
+   *  true/false, or null if nothing usable is connected. */
   _readBooleanInput(slot) {
     const input = this.inputs?.[slot];
     if (!input || input.link == null) return null;
-    const graph = this._graph();
-    const link = graph.links[input.link];
+    return this._resolveBoolean(this._graph(), input.link, 0);
+  }
+
+  _resolveBoolean(graph, linkId, depth) {
+    if (!graph || linkId == null || depth > 10) return null;
+    const link = linkById(graph, linkId);
     if (!link) return null;
-    const origin = graph.getNodeById(link.origin_id);
+    const origin = nodeById(graph, link.origin_id);
     if (!origin) return null;
-    // Primitive/Boolean nodes hold their value in a widget (a constant set in
-    // the UI), which we can read directly on the front-end.
-    const widgets = origin.widgets || [];
+
+    // 1) A constant boolean we can read directly on the front-end.
+    const direct = this._readBoolWidget(origin, link.origin_slot);
+    if (direct !== null) return direct;
+
+    // 2) The source is a subgraph INPUT proxy -> hop out to the parent graph's
+    //    matching input slot and keep resolving. Only the boolean crosses; the
+    //    controller (and the node id it holds) stays inside the subgraph.
+    const hop = this._crossSubgraphInput(graph, origin, link.origin_slot);
+    if (hop) return this._resolveBoolean(hop.graph, hop.linkId, depth + 1);
+
+    return null;
+  }
+
+  /** Read a boolean constant off a node, or its cached output value. */
+  _readBoolWidget(node, originSlot) {
+    const widgets = node.widgets || [];
     let w = widgets.find((x) => typeof x.value === "boolean");
     if (!w) w = widgets.find((x) => /^(value|boolean|bool)$/i.test(x.name || ""));
     if (w) return !!w.value;
-    // Fall back to a cached output value if the node exposes one.
-    const out = origin.outputs?.[link.origin_slot];
+    const out = node.outputs?.[originSlot];
     if (out && typeof out._data !== "undefined") return !!out._data;
     return null;
+  }
+
+  /** If `origin` is `graph`'s subgraph-input proxy node, return the parent
+   *  graph + the link feeding the matching input slot on the subgraph node.
+   *  Best-effort across litegraph versions; returns null (no crossing) if the
+   *  structure isn't recognised, so there's never a regression. */
+  _crossSubgraphInput(graph, origin, originSlot) {
+    try {
+      const inputProxy = graph.inputNode || graph._inputNode || graph.input_node;
+      if (!inputProxy || origin !== inputProxy) return null;
+
+      // Find the subgraph node (in the parent graph) that hosts this subgraph.
+      let host = graph._subgraph_node || graph.subgraphNode || graph._node || null;
+      let parentGraph = host ? host.graph : null;
+      if (!host) {
+        const root = app.graph;
+        const stack = root ? [root] : [];
+        while (stack.length) {
+          const g = stack.pop();
+          for (const n of g._nodes || g.nodes || []) {
+            if (n.subgraph === graph) { host = n; parentGraph = g; break; }
+            if (n.subgraph) stack.push(n.subgraph);
+          }
+          if (host) break;
+        }
+      }
+      if (!host || !parentGraph) {
+        console.debug("[Switchboard] subgraph boundary: parent node not found", { graph, origin });
+        return null;
+      }
+      const parentInput = host.inputs?.[originSlot];
+      if (!parentInput || parentInput.link == null) return null;
+      return { graph: parentGraph, linkId: parentInput.link };
+    } catch (err) {
+      console.debug("[Switchboard] subgraph boundary error", err);
+      return null;
+    }
   }
 
   /** True when this control has a BOOLEAN wired in -- i.e. it's governed by the
@@ -452,6 +533,75 @@ class BaseControllerNode extends LGraphNode {
       content: `Refresh ${word} list`,
       callback: () => this._buildWidgets(),
     });
+    options.push({
+      content: "Log Switchboard diagnostics (console)",
+      callback: () => this._logDiagnostics(),
+    });
+  }
+
+  /** Dump everything needed to diagnose targeting / boolean-crossing issues.
+   *  Open the browser console (F12) and copy the printed object. */
+  _logDiagnostics() {
+    const graph = this._graph();
+    const isNode = this.constructor.targetWord === "node";
+    const info = {
+      node: this.constructor.nodeTitle,
+      inRootGraph: graph === app.graph,
+      graphCtor: graph && graph.constructor ? graph.constructor.name : null,
+      graphKeys: graph ? Object.keys(graph) : [],
+      subgraphInputNodeProp:
+        (graph && graph.inputNode && "inputNode") ||
+        (graph && graph._inputNode && "_inputNode") ||
+        (graph && graph.input_node && "input_node") ||
+        null,
+      controls: [],
+    };
+    for (const c of this.properties.controls) {
+      const slot = this.findInputSlot(c.label);
+      const input = slot >= 0 ? this.inputs?.[slot] : null;
+      const linkId = input ? input.link : null;
+      let origin = null;
+      const link = linkId != null ? linkById(graph, linkId) : null;
+      if (link) {
+        const o = nodeById(graph, link.origin_id);
+        if (o) {
+          origin = {
+            id: o.id,
+            type: o.type,
+            ctor: o.constructor ? o.constructor.name : null,
+            title: o.title,
+            isVirtualNode: o.isVirtualNode,
+            keys: Object.keys(o),
+            widgets: (o.widgets || []).map((w) => ({ name: w.name, value: w.value })),
+            isGraphInputNode: !!(
+              graph &&
+              (o === graph.inputNode || o === graph._inputNode || o === graph.input_node)
+            ),
+          };
+        }
+      }
+      let targetFound;
+      if (isNode) {
+        targetFound = !!(
+          graph?.getNodeById?.(c.key) ||
+          (/^\d+$/.test(c.key) ? graph?.getNodeById?.(Number(c.key)) : null)
+        );
+      } else {
+        targetFound = getGraphGroups(graph).some((g) => g.title === c.key);
+      }
+      info.controls.push({
+        key: c.key,
+        label: c.label,
+        enabled: c.enabled,
+        targetFoundInThisGraph: targetFound,
+        inputSlot: slot,
+        hasLink: linkId != null,
+        booleanResolved: linkId != null ? this._readBooleanInput(slot) : null,
+        origin,
+      });
+    }
+    console.log("[Switchboard] DIAGNOSTICS — copy this:", info);
+    return info;
   }
 }
 
