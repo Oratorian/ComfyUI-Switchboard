@@ -9,11 +9,13 @@ pack.
 |------|----------------|----------------|
 | **Group Controller** | toggles groups, by **title** | the group titles in your graph |
 | **Node Controller** | toggles individual nodes, by **id** | nodes as `id: Title` |
+| **Wired Controller** | relays booleans to Controllers, by **signal name** | - |
 | **Value on Boolean** | boolean -> one of two values (float/int/string) | - |
 | **Boolean Switch** | routes one of two **any-type** inputs, lazily | - |
 
-The two Controllers are client-side (they toggle node modes in the browser); the
-two utilities are real backend nodes (they move data at runtime). See
+The three Controllers are client-side (they toggle node modes in the browser);
+the two utilities are real backend nodes (they move data at runtime). See
+[Wired Controller](#wired-controller) and
 [Bundled boolean utilities](#bundled-boolean-utilities).
 
 ## Install
@@ -21,7 +23,7 @@ two utilities are real backend nodes (they move data at runtime). See
 Copy this folder into `ComfyUI/custom_nodes/` (final path
 `ComfyUI/custom_nodes/comfyui-switchboard/`), then **restart ComfyUI** and
 hard-reload the browser (Ctrl/Cmd+Shift+R). There are **no external Python
-dependencies**. The two Controllers are front-end only; the two boolean utilities
+dependencies**. The three Controllers are front-end only; the two boolean utilities
 are lightweight Python nodes (which is why a server restart is needed, not just a
 browser reload). Everything lives under the **🎛️ Switchboard** category in the
 Add-Node menu.
@@ -64,24 +66,32 @@ pack; no external custom nodes are needed.**
 
 From top to bottom, a controller shows:
 
-1. **Input sockets (top of the node).** One `BOOLEAN` socket per controlled
-   target, labelled with the target (the group title, or `id: Title` for nodes).
-   Wiring is **optional** - see [Boolean inputs](#boolean-inputs). *(Under Nodes
-   2.0 the sockets render at the very top of the node, slightly detached from
-   their matching toggle row - that's a renderer quirk, not a bug.)*
+1. **Input sockets (top of the node).** A **`↦ patch`** input (accepts a
+   [Wired Controller](#wired-controller)), plus one `BOOLEAN` socket per
+   controlled target, labelled with the target (the group title, or `id: Title`
+   for nodes). Wiring is **optional** - see [Boolean inputs](#boolean-inputs).
+   *(Under Nodes 2.0 the sockets render at the very top of the node, slightly
+   detached from their matching toggle row - that's a renderer quirk, not a bug.)*
 2. **`ALL`** - the **master broadcast** toggle. Flips every *manually-controlled*
    target on/off at once (see precedence below).
-3. **One row pair per target:**
+3. **`channel`** - subscribes this controller to a [Wired
+   Controller](#wired-controller) by name. **Leave blank** unless you're using
+   one; empty = no subscription, no effect.
+4. **One row pair per target:**
    - **`<target>` toggle** - `enabled` / `disabled` for that target. This is what
      a wired boolean drives.
    - **`↳ disable as`** - `bypass` or `mute`, i.e. *how* that target turns off.
      This stays editable at all times, even while a boolean holds the target on.
-4. **`add`** - the **➕ Add group…/node…** dropdown. Pick a target to start
+5. **`add`** - the **➕ Add group…/node…** dropdown. Pick a target to start
    controlling it. Lists only targets not already controlled.
-5. **`remove`** - the **➖ Remove group…/node…** dropdown. Drops a target and
+6. **`remove`** - the **➖ Remove group…/node…** dropdown. Drops a target and
    **re-enables** it (so removing the controller never strands something
    disabled). The right-click menu also has **Remove controlled …** and
    **Refresh … list**.
+
+> **Driven by a Wired Controller?** The `↦ patch` input and `channel` field are
+> the two ways a [Wired Controller](#wired-controller) feeds this node. Both are
+> inert when unwired/blank, so they don't change anything until you connect one.
 
 ### What `bypass` vs `mute` do
 
@@ -136,6 +146,53 @@ the source node's widget.
   backend execution-blocking node instead (open an issue if you want that).
 
 ---
+
+## Wired Controller
+
+A **source** node that lives next to your booleans - typically **inside a
+subgraph** - and relays them to one or more Group/Node Controllers elsewhere.
+It exists to keep subgraphs tidy and to make cross-boundary control rock-solid.
+
+### Why it exists
+
+A Controller reads a wired boolean by following the wire **in its own graph** -
+which is reliable. Reading a boolean *across* a subgraph boundary (controller
+inside, boolean outside, or vice-versa) is best-effort and can get confused when
+several subgraphs are involved. The Wired Controller flips this to the reliable
+side: it sits **with** the booleans, reads them locally, and only the *result*
+crosses the boundary - in the direction that always works.
+
+### How it works (it's automatic)
+
+1. Drop a **Wired Controller** into the subgraph that holds your booleans.
+2. Connect it to the Controllers it should drive, in **either** of two ways:
+   - **By wire** - wire the Wired Controller's **`patch`** output across a
+     subgraph output (IO) into a Controller's **`↦ patch`** input. One output
+     fans out to many Controllers.
+   - **By channel** - type a name in the Wired Controller's **`channel`** field
+     and the same name in each Controller's **`channel`** field. No wire needed;
+     works across **any** subgraph nesting.
+3. **That's it - the Wired Controller fills itself in.** It reads the targets
+   already added on the Controllers it feeds and **auto-creates one `BOOLEAN`
+   input per target**, labelled to match. Add or remove a target on a Controller
+   and the Wired Controller's inputs follow. You never type or manage signal
+   names. Just wire your booleans (or promoted subgraph inputs) into the inputs
+   it grows.
+
+A signal behaves exactly like a wired boolean on its target: it **governs** the
+target and **overrides** the master `ALL` toggle
+(see [Precedence](#precedence---a-connected-boolean-wins)). A target's own direct
+`BOOLEAN` input, if also wired, wins over the bus signal for that one target. An
+input you leave unwired is simply ignored - that target stays on manual/`ALL`.
+
+> Result: a subgraph can hold just *booleans + one Wired Controller*, while the
+> real targets stay on Controllers out in the parent graph. One tidy box of
+> promoted switches drives the whole pipeline.
+
+The Wired Controller is client-side like the other Controllers. Use **wire** for
+a visible connection, or **channel** when you want zero wires across boundaries -
+or set both; the wire is tried first, the channel is the fallback. Either way the
+inputs are created for you.
 
 ## Bundled boolean utilities
 
@@ -192,13 +249,18 @@ branch is evaluated, so the unused input's entire upstream chain is **skipped**
   controller keeps holding the inner node/group id). Nested subgraphs work too.
   To switch a **whole** subgraph instead, target the subgraph node itself with a
   Node Controller from the parent graph.
+- **For control *across* subgraph boundaries, prefer the
+  [Wired Controller](#wired-controller).** Direct cross-boundary boolean reads
+  are best-effort and can get confused with several subgraphs in play; the Wired
+  Controller reads booleans in their own graph and relays the result by wire or
+  channel, which is reliable at any nesting depth.
 
 ## Nodes 2.0 compatibility
 
-The two **Controllers** are client-side (virtual) nodes built on the legacy
-LiteGraph API - the same class of node as rgthree's group tools. (The **Value on
-Boolean** and **Boolean Switch** utilities are ordinary backend nodes and aren't
-affected by any of this.) ComfyUI's **Nodes 2.0** (Vue renderer) is currently
+The three **Controllers** (Group, Node and Wired) are client-side (virtual)
+nodes built on the legacy LiteGraph API - the same class of node as rgthree's
+group tools. (The **Value on Boolean** and **Boolean Switch** utilities are
+ordinary backend nodes and aren't affected by any of this.) ComfyUI's **Nodes 2.0** (Vue renderer) is currently
 opt-in and keeps a compatibility layer, so the Controllers load and function
 there (toggles, booleans and queue-time apply all work). Caveats for the
 Controllers:
