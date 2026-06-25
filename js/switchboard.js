@@ -28,6 +28,7 @@ const DISABLE_MODES = ["bypass", "mute"];
 // Recognised values from an older single tri-state shape, kept for migration.
 const GROUP_STATES = ["enabled", "bypass", "mute"];
 const MODE_WIDGET_LABEL = "↳ disable as";
+const INVERT_WIDGET_LABEL = "⇄ input";
 
 // Wired Controller patch. A custom socket type so a Wired Controller's output
 // only connects to a Controller's patch input, plus the input slot label it
@@ -493,6 +494,7 @@ class BaseControllerNode extends LGraphNode {
           c.enabled = true;
         }
       }
+      if (typeof c.invert !== "boolean") c.invert = false;
       delete c.state;
       delete c.title;
     }
@@ -544,10 +546,15 @@ class BaseControllerNode extends LGraphNode {
       {},
     );
 
-    // 2) Per target: on/off toggle (boolean-driven) + independent "disable as".
+    // 2) Per target: a divider line, then on/off toggle (boolean-driven) +
+    //    "disable as" + invert. The divider keeps each target's three rows from
+    //    blurring into the next group's (and separates them from the header).
     for (const control of this.properties.controls) {
+      this._addDivider();
       this._addControlWidgets(control);
     }
+    // Close the last group off so the add/remove controls read as their own row.
+    if (this.properties.controls.length) this._addDivider();
 
     // 3) "Add" combo -- lists targets not yet controlled.
     this.addWidget(
@@ -577,7 +584,42 @@ class BaseControllerNode extends LGraphNode {
 
     this._refreshAddWidget();
     this._syncInputs();
+    // Grow to fit the widgets (e.g. the per-target invert row on saved nodes).
+    if (this.properties.controls.length) {
+      this.size[1] = Math.max(this.size[1], this.computeSize()[1]);
+    }
     this.setDirtyCanvas(true, true);
+  }
+
+  /** A thin horizontal separator widget pushed between target groups. It's a
+   *  custom draw-only widget: it renders a line on the legacy canvas and is
+   *  inert/non-interactive. (Under the Nodes 2.0 / Vue renderer custom draws
+   *  aren't shown, so it simply collapses to a small gap there -- harmless.) */
+  _addDivider() {
+    const widget = {
+      type: "switchboard_divider",
+      name: "",
+      value: "",
+      // Slim row; LiteGraph uses this to allocate height.
+      computeSize(width) {
+        return [width, 8];
+      },
+      draw(ctx, node, width, y, H) {
+        const margin = 10;
+        const lineY = Math.round(y + H * 0.5) + 0.5;
+        ctx.save();
+        ctx.strokeStyle = LiteGraph.WIDGET_OUTLINE_COLOR || "rgba(255,255,255,0.2)";
+        ctx.globalAlpha = 0.5;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(margin, lineY);
+        ctx.lineTo(width - margin, lineY);
+        ctx.stroke();
+        ctx.restore();
+      },
+    };
+    this.widgets.push(widget);
+    return widget;
   }
 
   _addControlWidgets(control) {
@@ -605,6 +647,22 @@ class BaseControllerNode extends LGraphNode {
         this.applyControl(control); // re-applies immediately if currently disabled
       },
       { values: DISABLE_MODES },
+    );
+
+    // Per-target input inversion -- flips the value coming from a wired boolean
+    // or a Wired Controller patch signal, so one input can drive two targets to
+    // OPPOSITE states (e.g. group A on while group B off). No effect on a
+    // manually-toggled target (there's no input to invert). NOTE: no _controlKey,
+    // so _syncToggles() leaves this user setting alone.
+    this.addWidget(
+      "toggle",
+      INVERT_WIDGET_LABEL,
+      !!control.invert,
+      (value) => {
+        control.invert = value;
+        this._pollInputs(); // re-read inputs so the (inverted) value applies now
+      },
+      { on: "inverted", off: "normal" },
     );
   }
 
@@ -736,6 +794,7 @@ class BaseControllerNode extends LGraphNode {
         if (direct !== null) value = direct;
       }
       if (value === null) continue; // unwired -> leave manual toggle alone
+      if (control.invert) value = !value; // flip this target relative to the input
       // Inputs drive only on/off; the target keeps its own disable mode.
       if (control.enabled !== value) {
         control.enabled = value;
@@ -758,7 +817,7 @@ class BaseControllerNode extends LGraphNode {
 
   addTarget(key, label) {
     if (this.properties.controls.some((c) => c.key === key)) return;
-    const control = { key, label, enabled: true, disableMode: "bypass" };
+    const control = { key, label, enabled: true, disableMode: "bypass", invert: false };
     this.properties.controls.push(control);
     // Rebuild so the toggle + disable-as combo, BOOLEAN input and "remove" combo
     // all appear at once. _buildWidgets() -> _syncInputs() adds the input slot.

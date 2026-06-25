@@ -77,11 +77,13 @@ From top to bottom, a controller shows:
 3. **`channel`** - subscribes this controller to a [Wired
    Controller](#wired-controller) by name. **Leave blank** unless you're using
    one; empty = no subscription, no effect.
-4. **One row pair per target:**
+4. **One row group per target:**
    - **`<target>` toggle** - `enabled` / `disabled` for that target. This is what
      a wired boolean drives.
    - **`↳ disable as`** - `bypass` or `mute`, i.e. *how* that target turns off.
      This stays editable at all times, even while a boolean holds the target on.
+   - **`⇄ input`** - `normal` or `inverted`. When `inverted`, this target follows
+     the **opposite** of its input - see [Inverting an input](#inverting-an-input).
 5. **`add`** - the **➕ Add group…/node…** dropdown. Pick a target to start
    controlling it. Lists only targets not already controlled.
 6. **`remove`** - the **➖ Remove group…/node…** dropdown. Drops a target and
@@ -122,6 +124,7 @@ on/off state and overrides everything else:**
 | Click the target's toggle | changes it | reverts to the boolean's value |
 | Flip the `ALL` master toggle | changes it | **ignored** - boolean still governs |
 | Change `↳ disable as` | takes effect | takes effect (controls *how* it disables) |
+| Set `⇄ input` to `inverted` | no effect (no input to flip) | target follows the **opposite** of the boolean |
 
 This is exactly the **Node Controller** screenshot above: `ALL` is `disabled`,
 but `8: VAE Decode` stays `enabled` because its boolean is `true`. Flipping `ALL`
@@ -130,6 +133,33 @@ does not touch boolean-governed targets - they only follow their input.
 The boolean updates the target **live** as you flip the upstream value, and is
 re-read once more **at queue time**, so the prompt that actually runs always
 matches the inputs.
+
+### Inverting an input
+
+Each target has a **`⇄ input`** toggle (`normal` / `inverted`). Set it to
+`inverted` and that target follows the **opposite** of whatever drives it:
+
+| Input value | `normal` target | `inverted` target |
+|-------------|-----------------|-------------------|
+| `true`      | enabled         | **disabled**      |
+| `false`     | disabled        | **enabled**       |
+
+This lets **one input drive two targets to opposite states** - an either/or
+switch. Wire the same boolean (or the same [Wired Controller](#wired-controller)
+patch signal) into two targets, set **one** of them to `inverted`, and a single
+`true`/`false` turns one group on while turning the other off.
+
+![One Value on Boolean (true) wired into both HighRes and HighRes2; HighRes is normal so it stays enabled, HighRes2 is inverted so it turns off - the HighRes2 node on the right is greyed out](assets/Invert-toggle.png)
+
+Above: a single **Value on Boolean** (`true`) drives both targets. **HighRes** is
+`normal` so it stays **enabled**; **HighRes2** is `inverted` so the same `true`
+turns it **off** (the `HighRes2` node on the right is greyed out). Flip the
+boolean to `false` and they swap.
+
+Inversion only affects **input-driven** targets - it flips the value coming from
+a wired boolean or a patch signal. A manually-toggled target has no input to
+invert, so the toggle is a no-op there. (`↳ disable as` still decides *how* the
+off target turns off, independently.)
 
 ### What the boolean reads (and its one limitation)
 
