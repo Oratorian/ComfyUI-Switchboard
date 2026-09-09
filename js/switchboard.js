@@ -67,16 +67,49 @@ function getGroupChoices(graph) {
   return choices;
 }
 
+/** A node's rect as [x, y, w, h], title bar included. `boundingRect` is only
+ *  filled in when a node is *rendered*, so it reads [0,0,0,0] for every node in
+ *  a graph that isn't currently on screen; pos/size are always valid, so derive
+ *  the rect from those when the cached one is degenerate. */
+function nodeRect(node) {
+  const cached = node.boundingRect;
+  if (cached && (cached[2] || cached[3])) return cached;
+  const titleH = (typeof LiteGraph !== "undefined" && LiteGraph.NODE_TITLE_HEIGHT) || 30;
+  const width = (node.size && node.size[0]) || 0;
+  const height = node.flags && node.flags.collapsed ? 0 : (node.size && node.size[1]) || 0;
+  return [node.pos[0], node.pos[1] - titleH, width, height + titleH];
+}
+
+/** litegraph's own containment rule: a node is in a group when the centre of
+ *  its rect falls inside the group's bounding box. */
+function groupContains(bounding, node) {
+  const [x, y, w, h] = nodeRect(node);
+  const cx = x + w / 2;
+  const cy = y + h / 2;
+  return (
+    cx >= bounding[0] &&
+    cx <= bounding[0] + bounding[2] &&
+    cy >= bounding[1] &&
+    cy <= bounding[1] + bounding[3]
+  );
+}
+
+/** The nodes inside `group`, worked out ourselves rather than by asking
+ *  litegraph. `group.recomputeInsideNodes()` matches on render-time bounding
+ *  rects, so it returns an EMPTY set for any graph the user hasn't opened --
+ *  e.g. a subgraph holding a Controller, which would then silently control
+ *  nothing, queue time included. */
+function nodesInGroup(graph, group) {
+  const bounding = group._bounding || group.bounding;
+  if (!bounding) return [];
+  return getGraphNodes(graph).filter((node) => groupContains(bounding, node));
+}
+
 /** Set the mode of every node inside `graph` groups whose title matches `key`. */
 function applyModeToGroup(graph, key, mode) {
   for (const group of getGraphGroups(graph)) {
     if (group.title !== key) continue;
-    // Make sure the group knows which nodes are inside its bounds.
-    if (typeof group.recomputeInsideNodes === "function") {
-      group.recomputeInsideNodes();
-    }
-    const nodes = group._nodes || group.nodes || [];
-    for (const node of nodes) node.mode = mode;
+    for (const node of nodesInGroup(graph, group)) node.mode = mode;
   }
 }
 
