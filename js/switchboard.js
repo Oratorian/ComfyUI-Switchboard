@@ -142,12 +142,38 @@ function nodeById(graph, id) {
 // when the source is a subgraph input proxy. The reliable operation is reading
 // in the node's OWN graph; cross-boundary hops are best-effort.
 
-/** Read a boolean constant off a node, or its cached output value. */
-function readBoolWidget(node, originSlot) {
-  const widgets = node.widgets || [];
+/** The widget on `node` most likely to hold a boolean constant. */
+function boolWidgetOf(node) {
+  const widgets = (node && node.widgets) || [];
   let w = widgets.find((x) => typeof x.value === "boolean");
   if (!w) w = widgets.find((x) => /^(value|boolean|bool)$/i.test(x.name || ""));
-  if (w) return !!w.value;
+  return w || null;
+}
+
+/** The input slot backing `widget` on `node` -- the slot a widget-input link
+ *  lands on when the widget is driven by a wire instead of typed in. */
+function widgetInputSlot(node, widget) {
+  if (!node || !widget) return null;
+  for (const input of node.inputs || []) {
+    if (input && input.widget && input.widget.name === widget.name) return input;
+  }
+  return null;
+}
+
+/** If `node`'s boolean widget is fed by a wire, the id of that link. Since
+ *  ComfyUI's subgraph *widget promotion*, a driven widget's own `value` is
+ *  never written back -- the live value sits upstream (on the promoting node),
+ *  so the wire has to be followed rather than the stale local value read. */
+function widgetInputLink(node) {
+  const input = widgetInputSlot(node, boolWidgetOf(node));
+  return input && input.link != null ? input.link : null;
+}
+
+/** Read a boolean constant off a node, or its cached output value. Returns null
+ *  for a widget that's driven by a wire -- see `widgetInputLink`. */
+function readBoolWidget(node, originSlot) {
+  const w = boolWidgetOf(node);
+  if (w) return widgetInputLink(node) != null ? null : !!w.value;
   const out = node.outputs?.[originSlot];
   if (out && typeof out._data !== "undefined") return !!out._data;
   return null;
@@ -269,8 +295,10 @@ function subgraphOutputsFedBy(graph, node, slot) {
   return [...res];
 }
 
-/** If `origin` is `graph`'s subgraph-input proxy node, return the parent graph +
- *  the link feeding the matching input slot on the subgraph instance node. */
+/** If `origin` is `graph`'s subgraph-input proxy node, hop out to the parent.
+ *  Returns `{graph, linkId}` when the matching input on the subgraph instance
+ *  node is wired, or `{value}` when that input is instead exposed as a promoted
+ *  widget on the instance (which holds the value itself -- no link to follow). */
 function crossSubgraphInput(graph, origin, originSlot) {
   try {
     const inputProxy = graph.inputNode || graph._inputNode || graph.input_node;
@@ -278,8 +306,13 @@ function crossSubgraphInput(graph, origin, originSlot) {
     const { host, parentGraph } = findSubgraphHost(graph);
     if (!host || !parentGraph) return null;
     const parentInput = host.inputs?.[originSlot];
-    if (!parentInput || parentInput.link == null) return null;
-    return { graph: parentGraph, linkId: parentInput.link };
+    if (!parentInput) return null;
+    if (parentInput.link != null) return { graph: parentGraph, linkId: parentInput.link };
+    const promoted = parentInput.widget
+      ? (host.widgets || []).find((w) => w.name === parentInput.widget.name)
+      : null;
+    if (promoted && typeof promoted.value === "boolean") return { value: !!promoted.value };
+    return null;
   } catch (err) {
     console.debug("[Switchboard] subgraph input crossing error", err);
     return null;
@@ -356,17 +389,32 @@ function resolveBoolean(graph, linkId, depth) {
   const origin = nodeById(graph, link.origin_id);
   if (!origin) return null;
 
-  // 1) A constant boolean we can read directly on the front-end.
+  // 1) Source is a subgraph INSTANCE node -> descend to whatever drives its
+  //    output. Tried first because such a node's widgets are *promoted* inner
+  //    widgets that have nothing to do with the output slot we tapped, so
+  //    reading one off it would pick an unrelated boolean.
+  const down = crossSubgraphOutput(origin, link.origin_slot);
+  if (down) {
+    const inner = resolveBoolean(down.graph, down.linkId, depth + 1);
+    if (inner !== null) return inner;
+  }
+
+  // 2) A constant boolean we can read directly on the front-end.
   const direct = readBoolWidget(origin, link.origin_slot);
   if (direct !== null) return direct;
 
-  // 2) Source is a subgraph INPUT proxy -> hop out to the parent and keep going.
-  const up = crossSubgraphInput(graph, origin, link.origin_slot);
-  if (up) return resolveBoolean(up.graph, up.linkId, depth + 1);
+  // 3) The constant's widget is driven by a wire (a promoted or converted
+  //    widget input) -> follow that wire; the local value is stale.
+  const viaWidget = widgetInputLink(origin);
+  if (viaWidget != null) return resolveBoolean(graph, viaWidget, depth + 1);
 
-  // 3) Source is a subgraph INSTANCE node -> descend to whatever drives its output.
-  const down = crossSubgraphOutput(origin, link.origin_slot);
-  if (down) return resolveBoolean(down.graph, down.linkId, depth + 1);
+  // 4) Source is a subgraph INPUT proxy -> hop out to the parent and keep going,
+  //    or read the promoted widget standing in for an unwired input.
+  const up = crossSubgraphInput(graph, origin, link.origin_slot);
+  if (up) {
+    if (typeof up.value === "boolean") return up.value;
+    if (up.linkId != null) return resolveBoolean(up.graph, up.linkId, depth + 1);
+  }
 
   return null;
 }
