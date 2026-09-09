@@ -1,0 +1,114 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Cut GitHub release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: meta
+        run: |
+          set -euo pipefail
+          pyproject_version=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#v}"
+            if [ "$version" != "$pyproject_version" ]; then
+              echo "::error::Tag $tag does not match pyproject.toml version $pyproject_version"
+              exit 1
+            fi
+          else
+            # Manual run: no tag to read, so take the version from pyproject.toml
+            # and let the release step create the tag.
+            version="$pyproject_version"
+            tag="v${version}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag"
+
+      - name: Cut changelog section
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > RELEASE_NOTES.md
+          import os, re
+
+          version = os.environ["VERSION"]
+          try:
+              text = open("CHANGELOG.md", encoding="utf-8").read()
+          except FileNotFoundError:
+              text = ""
+
+          # Split on top-level (#) headings so a CHANGELOG holding one release and
+          # one holding a stack of them both work, then keep the block for this
+          # version. No match -> use the file whole.
+          blocks = [b for b in re.split(r"(?m)^(?=#[^#])", text) if b.strip()]
+          body = next(
+              (b for b in blocks if re.search(rf"^#[^#].*\bv?{re.escape(version)}\b", b)),
+              text,
+          )
+          # The release title already carries the version, so drop a leading H1.
+          body = re.sub(r"(?m)\A#[^#][^\n]*\n", "", body).strip()
+          print(body or f"Release v{version}.")
+          PY
+          echo "--- release notes ---"
+          cat RELEASE_NOTES.md
+
+      - name: Build distribution zip
+        id: zip
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          name="comfyui-switchboard"
+          # Stage under the node's own folder name so the zip extracts straight
+          # into custom_nodes/.
+          mkdir -p "dist/${name}"
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.gitignore' \
+            --exclude='.comfyignore' \
+            --exclude='.ruff_cache' \
+            --exclude='__pycache__' \
+            --exclude='node.zip' \
+            --exclude='RELEASE_NOTES.md' \
+            --exclude='dist' \
+            ./ "dist/${name}/"
+          zipfile="${name}-v${VERSION}.zip"
+          (cd dist && zip -qr "../${zipfile}" "${name}")
+          echo "zipfile=${zipfile}" >> "$GITHUB_OUTPUT"
+          unzip -l "$zipfile"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: 🎛️ Switchboard v${{ steps.meta.outputs.version }}
+          body_path: RELEASE_NOTES.md
+          files: ${{ steps.zip.outputs.zipfile }}
+
+  publish-node:
+    name: Publish Custom Node to registry
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+      - name: Publish Custom Node
+        uses: Comfy-Org/publish-node-action@main
+        with:
+          personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }} ## Add your own personal access token to your Github Repository secrets and reference it here.
